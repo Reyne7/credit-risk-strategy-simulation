@@ -2,9 +2,6 @@
 
 基于 Python 的信用风险策略优化模拟项目
 
-![Project Cover](assets/project_cover.png)
-
-
 ## 1. Project Overview
 
 本项目模拟银行信用审批场景，通过 Python 对信贷申请数据进行风险分析，并设计基于规则的信用风险策略。
