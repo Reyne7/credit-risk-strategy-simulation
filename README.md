@@ -1,298 +1,129 @@
-# Credit Risk Strategy Optimization Simulation
+# 信贷审批策略分析（v2 · 真实公开数据）
 
-基于 Python 的信用风险策略优化模拟项目
+基于 Kaggle 公开数据集 **Give Me Some Credit**（15 万名借款人）的贷前审批策略分析：数据清洗 → 风险因子与 IV → 规则挖掘 → 评分卡 → cutoff 选择 → swap set。
 
-## 1. Project Overview
+**在线查看（含可交互的策略模拟器）**：https://reyne7.github.io/strategy/
 
-本项目模拟银行信用审批场景，通过 Python 对信贷申请数据进行风险分析，并设计基于规则的信用风险策略。
+## 一句话结论
 
-项目目标：
+**硬规则 + 评分卡 590 分**：坏账率从全部通过时的 6.68% 降到 **2.43%**，保留 **80.8%** 的通过率，拦下 71% 的坏客户（30% 留出集；收益假设为坏客户损失 = 好客户收益 × 10）。
 
-- 识别影响客户违约的关键风险因素；
-- 设计风险准入规则；
-- 评估规则对于风险控制和业务规模的影响；
-- 模拟完整信用风险策略开发流程。
+但更重要的发现是：**这份数据里，几条逾期和额度使用率规则就能做到和评分卡几乎一样的效果**。评分卡的价值不在“打败规则”，而在把通过率连续调到规则组合到不了的位置，并给规则之外的客户排序。
 
+## 业务问题
 
-## 2. Business Background
+某消费信贷产品的贷前审批：在通过率可接受的前提下，尽量把坏客户挡在门外。“可接受”用收益假设来定：每放进一个好客户赚 1，每放进一个坏客户亏 L（L = 5 / 10 / 15 做敏感性分析）。
 
-在银行信贷业务中，风险策略需要在：
+- 标签：2 年内出现 90 天以上逾期（`SeriousDlqin2yrs`），整体坏账率 6.68%
+- 切分：70% 训练 / 30% 留出，分层抽样；规则和评分卡只在训练集上开发，**所有效果都在留出集上评估**
 
-- 风险控制（降低坏账）
-- 业务增长（保持审批规模）
+## 1. 数据清洗
 
-之间寻找平衡。
+| 发现 | 行数 | 坏账率 | 处理 |
+|---|--:|--:|---|
+| 年龄 < 18 | 1 | — | 删除（录入错误） |
+| 逾期次数为 96 / 98 | 269 | 54.6% | 是特殊编码不是次数；单独成箱，作为高风险信号 |
+| 额度使用率 > 1000% | 241 | 7.0% | 违约率反而低于均值，判定为数据错误；单独成箱 |
+| 月收入缺失 | 29,731 | 5.6% | 缺失时负债收入比字段存的是负债金额（中位数 1,159），两者都单独成箱 |
+| 供养人数缺失 | 3,924 | — | 单独成箱 |
 
-本项目围绕以下问题展开：
+## 2. 风险因子（IV，训练集）
 
-> 如何识别高风险客户，并设计合理的审批策略？
+| 变量 | IV |
+|---|--:|
+| 循环额度使用率 | 1.151 |
+| 90 天以上逾期次数 | 0.874 |
+| 30–59 天逾期次数 | 0.737 |
+| 60–89 天逾期次数 | 0.591 |
+| 年龄 | 0.259 |
+| 未结清贷款与额度数 | 0.084 |
+| 月收入 | 0.069 |
+| 负债收入比 | 0.059 |
+| 房贷 / 抵押额度数 | 0.058 |
+| 供养人数 | 0.036 |
 
+风险信息高度集中在“逾期”和“额度使用率”两类变量上。
 
----
+## 3. 规则（留出集）
 
-# 3. Dataset
+| 规则 | 命中率 | 命中坏账率 | 提升度 | 增量坏账率 | 定位 |
+|---|--:|--:|--:|--:|---|
+| R01 90 天以上逾期 ≥ 1 次 | 5.4% | 41.5% | 6.2× | 41.5% | 硬规则 |
+| R02 60–89 天逾期 ≥ 1 次 | 4.9% | 36.8% | 5.5× | 26.0% | 硬规则 |
+| R03 逾期次数为特殊编码 | 0.2% | 47.3% | 7.1× | 47.3% | 硬规则 |
+| R04 30–59 天逾期 ≥ 2 次 | 5.1% | 33.3% | 5.0× | 21.4% | 交给评分卡 |
+| R05 额度使用率 ≥ 100% | 2.1% | 40.8% | 6.1× | 21.9% | 交给评分卡 |
+| R06 额度使用率 ≥ 90% 且年龄 < 40 | 5.0% | 24.5% | 3.7× | 10.7% | 交给评分卡 |
+| R07 30–59 天逾期 ≥ 1 次且额度使用率 ≥ 70% | 6.3% | 35.0% | 5.2× | 16.0% | 交给评分卡 |
 
-数据集：
+增量 = 按表中顺序叠加，前面规则都没拦、这条新拦下的部分。R04–R07 单看很强，但增量坏账率明显下降：它们拦下的人大多已被逾期规则拦过。
 
-- Sample Size: 10,000 credit applications
-- Target Variable: `bad_90d`
-- Data Type: Synthetic Credit Application Dataset
+## 4. 评分卡
 
+WOE 编码 + 逻辑回归，10 个 IV ≥ 0.02 的变量入模；600 分对应好坏比 15:1，PDO = 20。
 
-主要风险变量：
+| | 训练 | 留出 |
+|---|--:|--:|
+| AUC | 0.857 | 0.858 |
+| KS | 0.557 | 0.553 |
 
-|Category|Feature|
-|-|-|
-|Credit Profile|Credit Score|
-|Financial Burden|Debt Ratio|
-|Credit Behavior|Query Count (6M)|
-|Historical Risk|Overdue Count (12M)|
-|Credit Usage|Utilization|
+训练与留出的分数分布 PSI = 0.0003（同期随机切分，只说明没有过拟合，不能代替跨期监控）。
 
+## 5. cutoff 选择
 
-数据质量检查：
+策略 = 硬规则 R01–R03 命中即拒 + 分数低于 cutoff 拒绝。按收益最大化选分数线：
 
-- Missing Values: 0
-- Duplicate Records: 0
+| 坏客户损失 / 好客户收益 | 最优分数线 |
+|---|--:|
+| 5 | 570 |
+| 10 | 590 |
+| 15 | 605 |
 
+cutoff 不是分析出来的一个固定数，而是业务对“多放一个人值不值”的判断。
 
----
+## 6. swap set
 
-# 4. Methodology
+把“R01–R07 全部命中即拒”换成“硬规则 + 评分 ≥ 586”，通过率对齐在 83.1%：
 
-项目按照信用风险策略开发流程展开：
-Data Understanding
-    ↓
-Risk Factor Analysis
-    ↓
-Rule Strategy Design
-    ↓
-Strategy Evaluation
-    ↓
-Policy Optimization
-    ↓
-Monitoring Framework
+| | 新策略通过 | 新策略拒绝 |
+|---|---|---|
+| **原规则通过** | 36,511 人 · 坏账率 2.4% | 换出 873 人 · 坏账率 10.0% |
+| **原规则拒绝** | 换入 888 人 · 坏账率 12.0% | 6,728 人 · 坏账率 28.7% |
 
+两套策略只互换约 2% 的客户，新策略在这个通过率下**没有更好**（2.65% vs 2.60%）。在 83% 这一点，现有规则已经够好，不值得为评分卡推翻；评分卡的优势在 75%、70% 这类规则组合到不了的通过率上（硬规则 + 评分卡在 75% 通过率时坏账率 2.02%）。
 
+## 上线建议
 
----
+1. **先灰度再全量**：冠军挑战者测试，新旧策略并行至少一个表现期，用真实逾期数据决定是否切换。
+2. **监控**：分数分布 PSI（跨月）、规则命中率、通过率、FPD、Vintage；规则命中率突变往往比坏账率更早暴露问题。
+3. **评分卡用在规则管不到的地方**：规则之外的灰区 cutoff、额度与定价分层。
 
-# 5. Risk Factor Analysis
+## 局限
 
-分析客户特征与违约风险之间的关系。
+1. 数据只有一个截面，无法做跨期 PSI 和 Vintage 分析。
+2. 没有拒绝推断：只有被放款的人才有表现，策略放宽时新客群风险可能高于回溯估计。
+3. 收益比是假设，上线前要用真实利率、资金成本、违约损失率重算。
+4. 规则取整数阈值；组合规则在探索时看过全量数据，留出集表现可能略偏乐观。
 
+## 运行
 
-主要发现：
+```bash
+pip install -r requirements.txt
+python analysis/strategy_analysis.py data/cs-training.csv
+```
 
-### Credit Score
+数据下载见 [`data/README.md`](data/README.md)。输出在 `analysis/output/`：`strategy.json`（网页读取）、`iv.csv`、`rules.csv`、`cutoff_curve.csv`。
 
-信用评分越高，客户违约风险越低。
+## 目录
 
+```
+analysis/strategy_analysis.py   完整分析脚本（可复现，固定随机种子）
+analysis/output/                分析结果（聚合数据，不含个人记录）
+data/README.md                  数据下载说明（原始数据不随仓库分发）
+archive/v1-synthetic/           第一版：合成数据 + notebook（存档）
+```
 
-### Debt Ratio
+## 版本
 
-负债率超过70%的客户风险明显提升。
-
-
-### Query Count
-
-近6个月查询次数≥6次时，风险显著增加。
-
-
-### Historical Overdue
-
-历史逾期次数越多，未来违约概率越高。
-
-
-### Utilization
-
-高信用使用率客户具有更高风险。
-
-
-风险分析结果：
-
-![Risk Factor Analysis](assets/risk_factor_analysis.png)
-
-
----
-
-# 6. Risk Strategy Design
-
-基于风险因子分析，设计组合风险规则。
-
-
-## Rule C002
-Debt Ratio >=70%
-AND
-Utilization >=70%
-
-
-## Rule C004
-Credit Score <660
-AND
-Query Count >=6
-
-
-## Rule C006
-Overdue Count >=2
-
-
-组合规则通过多个风险信号识别高风险客户。
-
-
-策略规则效果：
-
-![Strategy Result](assets/strategy_result.png)
-
-
----
-
-# 7. Final Policy Evaluation
-
-
-最终策略效果：
-
-|Metric|Result|
-|-|-:|
-|Applicants|10,000|
-|Rejected Applicants|1,670|
-|Approved Applicants|8,330|
-|Approval Rate|83.30%|
-|Baseline Bad Rate|13.55%|
-|Final Bad Rate|10.79%|
-
-
-策略效果：
-
-- 降低组合坏率；
-- 保留83%以上审批规模；
-- 实现风险控制与业务增长平衡。
-
-
-最终策略表现：
-
-![Final Policy Result](assets/final_policy_result.png)
-
-
----
-
-# 8. Strategy Comparison
-
-
-Baseline:
-
-> Approve all applicants
-
-
-Final Policy:
-
-> Apply risk rejection rules
-
-
-效果对比：
-
-![Strategy Comparison](assets/strategy_comparison.png)
-
-
----
-
-# 9. Monitoring Framework
-
-
-生产环境中，需要持续监控策略表现：
-
-## Portfolio Monitoring
-
-- Approval Rate
-- Bad Rate
-- Vintage Performance
-- Portfolio Quality
-
-
-## Rule Monitoring
-
-- Rule Hit Rate
-- Rule Bad Rate
-- Bad Capture Rate
-- PSI
-
-
-## Strategy Optimization
-
-- Threshold Adjustment
-- Customer Segmentation
-- Strategy Iteration
-
-
----
-
-# 10. Tools
-
-- Python
-- Pandas
-- NumPy
-- Matplotlib
-- Jupyter Notebook
-
-
----
-
-# 11. Project Structure
-credit-risk-strategy-simulation
-
-├── README.md
-
-├── assets
-│   ├── project_cover.png
-│   ├── risk_factor_analysis.png
-│   ├── strategy_result.png
-│   ├── final_policy_result.png
-│   └── strategy_comparison.png
-
-├── data
-│   └── credit_applications.csv
-
-├── notebook
-│   └── credit_risk_analysis_final.ipynb
-
-├── report
-│   └── 信用风险策略模拟分析报告.pdf
-
-├── sql
-
-└── requirements.txt
-
-
-
----
-
-# 12. Limitations & Future Improvements
-
-
-当前限制：
-
-- 使用模拟数据；
-- 未引入真实贷款表现数据；
-- 未建立机器学习评分模型。
-
-
-未来优化：
-
-- 引入 Logistic Regression / XGBoost 风险模型；
-- 增加模型解释（SHAP）；
-- 增加 PSI 和 Vintage 分析；
-- 建立策略监控体系。
-
-
----
-
-# 13. Author
-
-Reyne
-
-Focus Areas:
-
-- Credit Risk Management
-- Risk Strategy
-- Data Analysis
-- AI + Financial Applications
+- **v2**（当前）：改用真实公开数据；补充数据清洗、IV、规则增量、评分卡、收益驱动的 cutoff、swap set。
+- **v1**（存档）：合成数据。违约标签由几个变量按公式生成，再分析这些变量，存在循环论证，因此重做。
